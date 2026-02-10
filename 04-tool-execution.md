@@ -55,17 +55,21 @@ function jsonResult(payload: Record<string, unknown>): ToolResult {
   };
 }
 
-// Результат з зображенням:
-function imageResult(params: {
-  text: string;
-  imageBase64: string;
-  mimeType: string;
+// Результат з зображенням (async, з sanitization):
+async function imageResult(params: {
+  label: string;         // Опис для AI
+  path: string;          // Шлях до файлу
+  base64: string;        // Base64 дані
+  mimeType: string;      // MIME тип
+  extraText?: string;    // Додатковий текст
   details?: Record<string, unknown>;
-}): ToolResult {
+}): Promise<ToolResult> {
+  // Sanitizes images (може зменшити/обрізати великі зображення)
+  const sanitized = await sanitizeToolResultImages(params);
   return {
     content: [
-      { type: "text", text: params.text },
-      { type: "image", data: params.imageBase64, mimeType: params.mimeType },
+      { type: "text", text: params.label },
+      { type: "image", data: sanitized.base64, mimeType: params.mimeType },
     ],
     details: params.details ?? {},
   };
@@ -206,10 +210,16 @@ function toToolDefinitions(tools: AgentTool[]): ToolDefinition[] {
     parameters: tool.parameters,
     execute: async (toolCallId, params, signal, onUpdate, ctx) => {
       try {
-        // Detect legacy vs current arg signature:
+        // Підтримує 2 формати аргументів для backward compatibility:
+        // Legacy:  (toolCallId, params, signal, onUpdate, ...)
+        // Current: (toolCallId, params, onUpdate, ctx, signal)
+        if (isLegacyToolExecuteArgs(tool)) {
+          return await tool.execute(toolCallId, params, signal, onUpdate);
+        }
         return await tool.execute(toolCallId, params, onUpdate, ctx, signal);
       } catch (err) {
-        return jsonResult({ error: formatErrorMessage(err) });
+        if (err instanceof DOMException && err.name === "AbortError") throw err; // Re-throw abort
+        return jsonResult({ status: "error", error: formatErrorMessage(err) });
       }
     },
   }));
@@ -266,7 +276,54 @@ async function executeCanvasAction(action, params) {
 
 ---
 
-## 8. Tool Policy (Контроль доступу)
+## 8. Sandbox Tool Isolation
+
+**Файл:** `src/agents/pi-tools.ts:245-273`
+
+Коли sandbox увімкнений, coding tools замінюються на sandboxed версії:
+
+```typescript
+// В sandbox режимі:
+// - createSandboxedReadTool()   замість read
+// - createSandboxedWriteTool()  замість write
+// - createSandboxedEditTool()   замість edit
+// workspaceAccess: "ro" | "rw" — контролює доступ до workspace
+```
+
+**Інсайт:** Для landing page builder sandbox обов'язковий — юзер-generated код не повинен мати доступ до файлової системи хоста.
+
+---
+
+## 9. Before-Tool-Call Hook
+
+**Файл:** `src/agents/pi-tools.before-tool-call.ts:16-88`
+
+Плагіни можуть перехоплювати виклики tools:
+
+```typescript
+// Хуки можуть:
+// 1. Заблокувати виконання tool з кастомною причиною
+// 2. Модифікувати параметри перед виконанням
+// 3. Логувати/аудитувати всі tool calls
+```
+
+---
+
+## 10. Plugin Tool Grouping
+
+**Файл:** `src/agents/pi-tools.ts:372-407`
+
+Плагіни можуть створювати групи tools які вмикаються/вимикаються разом:
+
+```typescript
+// buildPluginToolGroups() — групує tools по plugin id
+// expandPolicyWithPluginGroups() — розширює policy з урахуванням груп
+// stripPluginOnlyAllowlist() — видаляє plugin-only дозволи з core tools
+```
+
+---
+
+## 11. Tool Policy (Контроль доступу)
 
 ```typescript
 // Глобальний allow/deny:
@@ -282,7 +339,7 @@ config.plugins["my-plugin"].tools.allow = ["custom_tool"];
 
 ---
 
-## 9. Патерн для твого проекту: Landing Page Tools
+## 12. Патерн для твого проекту: Landing Page Tools
 
 ```typescript
 // tools/write-html.ts

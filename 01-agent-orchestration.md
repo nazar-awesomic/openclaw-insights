@@ -63,6 +63,7 @@ OpenClaw вирішує проблему "що робити коли агент 
 | `followup` | Ставить у чергу, виконає після завершення поточного |
 | `steer-backlog` | Комбінація steer + followup |
 | `collect` | Збирає повідомлення, відправляє все разом |
+| `queue` | Ставить в чергу (варіант followup) |
 
 ```typescript
 // Steering — вставка повідомлення в поточний run:
@@ -96,7 +97,8 @@ createChatRunState()     // Стан конкретного run (буфер ст
 
 ## 3. Followup Run — Автоматичне продовження
 
-**Файл:** `src/auto-reply/reply/get-reply-run.ts:356-406`
+**Тип:** `src/auto-reply/reply/queue/types.ts:21-82`
+**Конструювання:** `src/auto-reply/reply/get-reply-run.ts:356-406`
 
 Система створює `FollowupRun` об'єкт, який містить повний контекст для виконання:
 
@@ -226,7 +228,92 @@ const maybeStopOnIdle = () => {
 
 ---
 
-## 8. Cron/Scheduling (Заплановані задачі)
+## 8. Session Write Lock (Критичний патерн)
+
+**Файл:** `src/agents/pi-embedded-runner/run/attempt.ts:403-405, 922`
+
+Запобігає конкурентним мутаціям сесії:
+
+```typescript
+// Перед початком agentic loop:
+const releaseLock = await acquireSessionWriteLock(sessionId);
+try {
+  // ... весь agentic loop тут ...
+} finally {
+  releaseLock(); // Завжди звільняється
+}
+```
+
+**Інсайт для твого проекту:** Якщо юзер може мати кілька активних задач, кожна задача повинна мати write lock на свій workspace. Запобігає корупції файлів при паралельній генерації.
+
+---
+
+## 9. Hook Runner Integration
+
+**Файл:** `src/agents/pi-embedded-runner/run/attempt.ts:710-749, 854-873`
+
+Плагіни можуть втручатись в lifecycle агента:
+
+```typescript
+// before_agent_start — плагіни можуть додати контекст до system prompt:
+const hookResult = await hookRunner.run("before_agent_start", {
+  agentId, sessionKey, prompt, systemPrompt
+});
+// hookResult може містити: { systemPrompt?, prependContext? }
+
+// agent_end — fire-and-forget (не блокує відповідь):
+void hookRunner.run("agent_end", { agentId, result, toolMetas });
+```
+
+**Інсайт:** `before_agent_start` — await (блокує), `agent_end` — fire-and-forget (не блокує). Обирай стратегію в залежності від критичності хука.
+
+---
+
+## 10. Session Compaction та History Repair
+
+### Compaction Retry
+
+**Файл:** `src/agents/pi-embedded-runner/run/attempt.ts:833-842`
+
+Коли контекст стає занадто великим, система автоматично компактує (стискає) історію:
+
+```typescript
+// Якщо compaction fails — автоматичний retry:
+await waitForCompactionRetry();
+// Graceful degradation без втрати conversation state
+```
+
+### History Repair
+
+**Файл:** `src/agents/pi-embedded-runner/run/attempt.ts:757-771`
+
+Автоматичне виявлення та виправлення "осиротілих" user messages:
+
+```typescript
+// Виявляє порушення порядку ролей (user-user без assistant між ними)
+// Запобігає role ordering violations від session manipulation
+// Критично для multi-agent scenarios
+```
+
+---
+
+## 11. Reasoning Level Support
+
+**Файли:** `src/agents/pi-embedded-subscribe.ts:45`, system-prompt.ts
+
+Три режими reasoning (thinking):
+- `"off"` — без reasoning
+- `"on"` — reasoning є, але прихований від стріму
+- `"stream"` — reasoning стрімиться окремим потоком
+
+```typescript
+// Reasoning — це окремий стрім, може буферизуватись інакше ніж основна відповідь
+state.streamReasoning = true; // Прапорець для reasoning mode
+```
+
+---
+
+## 12. Cron/Scheduling (Заплановані задачі)
 
 OpenClaw підтримує cron-based задачі через gateway:
 
@@ -236,7 +323,7 @@ OpenClaw підтримує cron-based задачі через gateway:
 
 ---
 
-## 9. Execution Approval (Схвалення виконання)
+## 13. Execution Approval (Схвалення виконання)
 
 **Файл:** `src/gateway/server-methods.ts:93-120`
 
@@ -258,7 +345,7 @@ ExecApprovalManager checks policy
 
 ---
 
-## 10. Патерн для твого проекту: Task Lifecycle
+## 14. Патерн для твого проекту: Task Lifecycle
 
 На основі OpenClaw, рекомендована архітектура для "landing page builder":
 

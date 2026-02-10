@@ -44,11 +44,13 @@ type PluginApi = {
 
 **Файл:** `src/plugins/discovery.ts:115-150`, `src/plugins/loader.ts:169-453`
 
-### Джерела плагінів (пріоритет):
-1. **Bundled** — вбудовані в репозиторій
-2. **Global** — `~/.openclaw/plugins/`
-3. **Workspace** — `~/.openclaw/agents/<agentId>/plugins/`
-4. **Config** — шляхи з конфігурації
+### Джерела плагінів (від найвищого пріоритету до найнижчого):
+1. **Config** — шляхи з `config.plugins.load.paths` (найвищий пріоритет)
+2. **Workspace** — `<workspaceDir>/.openclaw/extensions/`
+3. **Global** — `~/.openclaw/extensions/`
+4. **Bundled** — вбудовані в репозиторій (найнижчий пріоритет)
+
+> **Важливо:** Перший знайдений плагін з даним `id` виграє. Config-плагіни перевизначають bundled.
 
 ### Процес завантаження:
 
@@ -209,11 +211,14 @@ api.registerTool(
 type HookName =
   | "before_agent_start"   // Модифікація system prompt
   | "agent_end"            // Після завершення агента
+  | "before_compaction"    // Перед стисненням контексту
+  | "after_compaction"     // Після стиснення контексту
   | "message_received"     // Вхідне повідомлення
   | "message_sending"      // Перед відправкою
   | "message_sent"         // Після відправки
   | "before_tool_call"     // Перед виконанням tool
   | "after_tool_call"      // Після виконання tool
+  | "tool_result_persist"  // Збереження результату tool
   | "session_start"        // Початок сесії
   | "session_end"          // Кінець сесії
   | "gateway_start"        // Старт gateway
@@ -289,16 +294,18 @@ type ChannelPlugin = {
 
 ```typescript
 type ChannelCapabilities = {
-  chatTypes: ("direct" | "group" | "channel")[];
+  chatTypes: (ChatType | "thread")[];  // ChatType = "direct" | "group" | "channel"
   polls: boolean;
   reactions: boolean;
   edit: boolean;
   unsend: boolean;
   reply: boolean;
+  effects?: boolean;         // Анімації/ефекти
   threads: boolean;
   media: boolean;
   nativeCommands: boolean;
   blockStreaming: boolean;
+  groupManagement?: boolean; // Управління групами
 };
 ```
 

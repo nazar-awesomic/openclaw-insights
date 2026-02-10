@@ -16,7 +16,7 @@ type BackoffPolicy = {
   jitter: number;      // Випадковість (0-1)
 };
 
-function computeBackoff(attempt: number, policy: BackoffPolicy): number {
+function computeBackoff(policy: BackoffPolicy, attempt: number): number {
   const base = Math.min(
     policy.initialMs * Math.pow(policy.factor, attempt),
     policy.maxMs
@@ -51,16 +51,20 @@ async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
 // Lock payload:
 type LockPayload = {
   pid: number;
-  createdAt: number;
+  createdAt: string;   // ISO 8601 timestamp (не number!)
   configPath: string;
-  startTime: number;
+  startTime?: number;  // optional
 };
 
-// Lock directory: os.tmpdir()/openclaw-<uid>
+// Lock directory: os.tmpdir()/openclaw-<uid> (Unix), os.tmpdir()/openclaw (Windows)
+// Lock file: gateway.{SHA1(configPath)}.lock — дозволяє кілька конфігів
+//
 // Перевірка stale lock:
 // 1. Перевіряє чи процес живий: process.kill(pid, 0)
-// 2. Linux: читає /proc/[pid]/cmdline та /proc/[pid]/stat
-// 3. Timeout-based acquisition (чекає поки lock звільниться)
+// 2. Linux: читає /proc/[pid]/cmdline та /proc/[pid]/stat (start time)
+//    — розрізняє reuse PID від оригінального процесу
+// 3. Timeout-based acquisition з polling (100ms default interval)
+// 4. Три стани: "dead" (видаляє lock), "alive" (чекає), "unknown" (staleness timeout)
 ```
 
 **Інсайт для твого проекту:** Використовуй distributed locks (Redis SETNX або PostgreSQL advisory locks) для координації worker processes.
@@ -403,7 +407,7 @@ class TaskWorker {
       } catch (err) {
         if (attempt === maxRetries - 1) throw err;
 
-        const delay = computeBackoff(attempt, backoffPolicy);
+        const delay = computeBackoff(backoffPolicy, attempt);
         await sleepWithAbort(delay, this.abortController.signal);
       }
     }
